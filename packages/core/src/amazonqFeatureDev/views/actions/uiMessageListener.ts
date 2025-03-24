@@ -67,6 +67,9 @@ export class UIMessageListener {
             case 'store-code-result-message-id':
                 this.storeCodeResultMessageId(msg)
                 break
+            case 'form-action-click':
+                this.formActionClicked(msg)
+                break
         }
     }
 
@@ -164,6 +167,12 @@ export class UIMessageListener {
         this.featureDevControllerEventsEmitters?.storeCodeResultMessageId.fire({
             messageId: msg.messageId,
             tabID: msg.tabID,
+        })
+    }
+
+    private formActionClicked(msg: any) {
+        this.featureDevControllerEventsEmitters?.formActionClicked.fire({
+            ...msg,
         })
     }
 }

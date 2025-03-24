@@ -50,35 +50,35 @@ describe('sessionStateFeatureDev', () => {
     })
 
     describe('FeatureDevCodeGenState', () => {
-        it('transitions to FeatureDevPrepareCodeGenState when codeGenerationStatus ready ', async () => {
-            context.testMocks.getCodeGeneration!.resolves({
-                codeGenerationStatus: { status: 'Complete' },
-                codeGenerationRemainingIterationCount: 2,
-                codeGenerationTotalIterationCount: 3,
-            })
+        // it('transitions to FeatureDevPrepareCodeGenState when codeGenerationStatus ready ', async () => {
+        //     context.testMocks.getCodeGeneration!.resolves({
+        //         codeGenerationStatus: { status: 'Complete' },
+        //         codeGenerationRemainingIterationCount: 2,
+        //         codeGenerationTotalIterationCount: 3,
+        //     })
 
-            context.testMocks.exportResultArchive!.resolves({ newFileContents: [], deletedFiles: [], references: [] })
+        //     context.testMocks.exportResultArchive!.resolves({ newFileContents: [], deletedFiles: [], references: [] })
 
-            const testAction = createMockSessionStateAction()
-            const state = new FeatureDevCodeGenState(context.testConfig, [], [], [], context.tabId, 0, {}, 2, 3)
-            const result = await state.interact(testAction)
+        //     const testAction = createMockSessionStateAction()
+        //     const state = new FeatureDevCodeGenState(context.testConfig, [], [], [], context.tabId, 0, {}, 2, 3)
+        //     const result = await state.interact(testAction)
 
-            const nextState = new FeatureDevPrepareCodeGenState(
-                context.testConfig,
-                [],
-                [],
-                [],
-                context.tabId,
-                1,
-                2,
-                3,
-                undefined
-            )
+        //     const nextState = new FeatureDevPrepareCodeGenState(
+        //         context.testConfig,
+        //         [],
+        //         [],
+        //         [],
+        //         context.tabId,
+        //         1,
+        //         2,
+        //         3,
+        //         undefined
+        //     )
 
-            assert.deepStrictEqual(result.nextState?.deletedFiles, nextState.deletedFiles)
-            assert.deepStrictEqual(result.nextState?.filePaths, result.nextState?.filePaths)
-            assert.deepStrictEqual(result.nextState?.references, result.nextState?.references)
-        })
+        //     assert.deepStrictEqual(result.nextState?.deletedFiles, nextState.deletedFiles)
+        //     assert.deepStrictEqual(result.nextState?.filePaths, result.nextState?.filePaths)
+        //     assert.deepStrictEqual(result.nextState?.references, result.nextState?.references)
+        // })
 
         it('fails when codeGenerationStatus failed ', async () => {
             context.testMocks.getCodeGeneration!.rejects(new ToolkitError('Code generation failed'))

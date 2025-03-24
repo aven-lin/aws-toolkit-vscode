@@ -11,6 +11,7 @@ import { DiffTreeFileInfo } from '../webview/ui/diffTree/types'
 import { Messenger } from './connector/baseMessenger'
 import { FeatureClient } from '../client/client'
 import { TelemetryHelper } from '../util/telemetryHelper'
+import { EventHandlers } from '../../amazonqFeatureDev/prototype/types'
 
 export enum FollowUpTypes {
     // UnitTestGeneration
@@ -120,6 +121,7 @@ export interface SessionStateAction {
     telemetry: TelemetryHelper
     uploadHistory?: UploadHistory
     tokenSource?: CancellationTokenSource
+    eventHandlers?: EventHandlers
 }
 
 export type NewFileZipContents = { zipFilePath: string; fileContent: string }

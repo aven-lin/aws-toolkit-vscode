@@ -44,6 +44,7 @@ export function createMockChatEmitters(): ChatControllerEventEmitters {
         insertCodeAtPositionClicked: new vscode.EventEmitter<any>(),
         fileClicked: new vscode.EventEmitter<any>(),
         storeCodeResultMessageId: new vscode.EventEmitter<any>(),
+        formActionClicked: new vscode.EventEmitter<any>(),
     }
 }
 

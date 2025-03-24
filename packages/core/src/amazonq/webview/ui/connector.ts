@@ -703,6 +703,9 @@ export class Connector {
             case 'doc':
                 this.docChatConnector.onCustomFormAction(tabId, action)
                 break
+            case 'featuredev':
+                this.featureDevChatConnector.onCustomFormAction(tabId, action)
+                break
             case 'cwc':
                 if (action.id === `open-settings`) {
                     this.sendMessageToExtension({

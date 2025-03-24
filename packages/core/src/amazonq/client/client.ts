@@ -30,4 +30,12 @@ export abstract class FeatureClient {
     public abstract getCodeGeneration(conversationId: string, codeGenerationId: string): Promise<any>
 
     public abstract exportResultArchive(conversationId: string): Promise<any>
+
+    public abstract listEvents(
+        conversationId: string,
+        request: {
+            nextToken?: string
+            waitTimeSeconds?: number
+        }
+    ): Promise<any>
 }

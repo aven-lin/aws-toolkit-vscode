@@ -7,6 +7,7 @@ import * as path from 'path'
 
 import { ConversationNotStartedState, FeatureDevPrepareCodeGenState } from './sessionState'
 import {
+    CurrentWsFolders,
     type DeletedFileInfo,
     type Interaction,
     type NewFileInfo,
@@ -34,6 +35,11 @@ import { FollowUpTypes } from '../../amazonq/commons/types'
 import { SessionConfig } from '../../amazonq/commons/session/sessionConfigFactory'
 import { Messenger } from '../../amazonq/commons/connector/baseMessenger'
 import { ContentLengthError as CommonContentLengthError } from '../../shared/errors'
+import { Event, WorkspaceChangeResult } from '../prototype/types'
+import * as vscode from 'vscode'
+import { VirtualFileSystem } from '../../shared/virtualFilesystem'
+import { getDeletedFileInfos, registerNewFiles } from '../../amazonq/util/files'
+
 export class Session {
     private _state?: SessionState | Omit<SessionState, 'uploadId'>
     private task: string = ''
@@ -147,6 +153,7 @@ export class Session {
                 telemetry: this.telemetry,
                 tokenSource: this.state.tokenSource,
                 uploadHistory: this.state.uploadHistory,
+                eventHandlers: this.startEventHandler.bind(this),
             })
 
             if (resp.nextState) {
@@ -165,6 +172,193 @@ export class Session {
             }
             throw e
         }
+    }
+
+    private async *listEvents(): AsyncGenerator<Event> {
+        let lastEventToken: string | undefined = undefined
+
+        while (!this.state?.tokenSource?.token.isCancellationRequested) {
+            const events = await this.proxyClient.listEvents(this.conversationId, {
+                nextToken: lastEventToken,
+                waitTimeSeconds: 20,
+            })
+
+            lastEventToken = events.nextToken
+
+            for (const event of events.items ?? []) {
+                yield {
+                    eventType: event.eventType,
+                    eventData: event.eventData,
+                    timestamp: event.timestamp,
+                    messageId: event.messageId,
+                }
+            }
+
+            if (!lastEventToken) {
+                break
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, 1000))
+        }
+    }
+
+    protected async startEventHandler(): Promise<WorkspaceChangeResult> {
+        // Initialize collections to track changes
+        const newFiles: NewFileInfo[] = []
+        const deletedFiles: DeletedFileInfo[] = []
+
+        getLogger().debug(`Start calling startEventHandler...`)
+        for await (const event of this.listEvents()) {
+            getLogger().debug(`Process Received Events Started...`)
+            if (this.state?.tokenSource?.token.isCancellationRequested) {
+                getLogger().debug(`Process Received Events: isCancellationRequested....`)
+                break
+            }
+
+            const eventData = JSON.parse(Buffer.from(event.eventData, 'base64').toString())
+
+            switch (event.eventType) {
+                case 'workspace.update':
+                    if (eventData.edit?.changes) {
+                        getLogger().debug(`Process Received Events: workspace.update`)
+                        const { filePaths, deletedFiles: deletedPathsInfo } = await this.processWorkspaceChanges(
+                            eventData.edit.changes,
+                            this.config.fs,
+                            this.config.workspaceFolders
+                        )
+                        // Log before changes
+                        getLogger().debug(
+                            `Before insertChanges - Files to process: ${JSON.stringify(
+                                filePaths.map((f) => ({
+                                    relativePath: f.relativePath,
+                                    workspacePath: f.workspaceFolder.uri.fsPath,
+                                    virtualUri: f.virtualMemoryUri.toString(),
+                                })),
+                                null,
+                                2
+                            )}`
+                        )
+
+                        // Call insertChanges() to apply changes to workspace
+
+                        getLogger().debug(`Start insert code changes`)
+                        await this.insertChanges(filePaths, deletedPathsInfo)
+
+                        for (const file of filePaths) {
+                            try {
+                                // Use the actual workspace path
+                                const workspacePath = file.workspaceFolder.uri.fsPath
+                                const filePath = path.join(workspacePath, file.relativePath)
+                                getLogger().debug(`Verify workspacePath: ${workspacePath}`)
+                                getLogger().debug(`Verify filePath: ${filePath}`)
+
+                                // Verify file exists before trying to open it
+                                if (await fs.existsFile(filePath)) {
+                                    getLogger().debug(`Verify file exists before trying to open it`)
+                                    const fileUri = vscode.Uri.file(filePath)
+                                    const document = await vscode.workspace.openTextDocument(fileUri)
+                                    await vscode.window.showTextDocument(document, {
+                                        preview: false,
+                                        preserveFocus: true,
+                                        viewColumn: vscode.ViewColumn.Active,
+                                    })
+                                    // this.updateCodeResultMessageId(event.messageId)
+                                } else {
+                                    getLogger().warn(`File not found after writing: ${filePath}`)
+                                }
+                            } catch (err) {
+                                getLogger().error(`Error opening file ${file.relativePath}: ${err}`)
+                            }
+                        }
+                        // Collect both new files and deleted files
+                        newFiles.push(...filePaths)
+                        deletedFiles.push(...deletedPathsInfo)
+                    }
+                    break
+
+                case 'agent.status':
+                    this.messenger.sendAnswer({
+                        message: eventData.message.value,
+                        type: 'answer',
+                        tabID: this.tabID,
+                        canBeVoted: false,
+                    })
+                    break
+
+                case 'work.product':
+                    break
+
+                case 'agent.question':
+                    break
+
+                case 'user.question':
+                    break
+
+                case 'request.complete':
+                    this.messenger.sendAnswer({
+                        message: 'Request Complete',
+                        type: 'answer',
+                        tabID: this.tabID,
+                        canBeVoted: false,
+                    })
+                    break
+            }
+        }
+        return {
+            newFiles,
+            deletedFiles,
+        }
+    }
+
+    private async processWorkspaceChanges(
+        changes: Record<
+            string,
+            Array<{
+                range?: {
+                    start: { line: number; character: number }
+                    end: { line: number; character: number }
+                }
+                newText: string
+            }>
+        >,
+        fs: VirtualFileSystem,
+        workspaceFolders: CurrentWsFolders
+    ): Promise<{
+        filePaths: NewFileInfo[]
+        deletedFiles: DeletedFileInfo[]
+    }> {
+        const result = {
+            filePaths: [] as NewFileInfo[],
+            deletedFiles: [] as DeletedFileInfo[],
+        }
+        const deletedFilePaths: string[] = []
+
+        for (const [filePath, fileChanges] of Object.entries(changes)) {
+            const change = fileChanges[0]
+
+            if (change.range && change.newText === '') {
+                // Deleted File - collect paths first
+                deletedFilePaths.push(filePath)
+            } else if (change.newText) {
+                // New or Updated File
+                const fileInfo = registerNewFiles(
+                    fs,
+                    [{ zipFilePath: filePath, fileContent: change.newText }],
+                    this.uploadId,
+                    workspaceFolders,
+                    this.conversationId,
+                    featureDevScheme
+                )[0]
+                result.filePaths.push(fileInfo)
+            }
+        }
+
+        if (deletedFilePaths.length > 0) {
+            const deletedFileInfos = getDeletedFileInfos(deletedFilePaths, workspaceFolders)
+            result.deletedFiles.push(...deletedFileInfos)
+        }
+
+        return result
     }
 
     public async updateFilesPaths(params: UpdateFilesPathsParams) {
@@ -201,22 +395,29 @@ export class Session {
         }
     }
 
-    public async insertChanges() {
-        const newFilePaths =
-            this.state.filePaths?.filter((filePath) => !filePath.rejected && !filePath.changeApplied) ?? []
+    public async insertChanges(filePaths: NewFileInfo[], deletedFiles: DeletedFileInfo[]) {
+        // const newFilePaths =
+        //     this.state.filePaths?.filter((filePath) => !filePath.rejected && !filePath.changeApplied) ?? []
+        // await this.insertNewFiles(newFilePaths)
+
+        // const deletedFiles =
+        //     this.state.deletedFiles?.filter((deletedFile) => !deletedFile.rejected && !deletedFile.changeApplied) ?? []
+        // await this.applyDeleteFiles(deletedFiles)
+
+        const newFilePaths = filePaths?.filter((filePath) => !filePath.rejected && !filePath.changeApplied) ?? []
         await this.insertNewFiles(newFilePaths)
 
-        const deletedFiles =
-            this.state.deletedFiles?.filter((deletedFile) => !deletedFile.rejected && !deletedFile.changeApplied) ?? []
-        await this.applyDeleteFiles(deletedFiles)
+        const newDeletedFiles =
+            deletedFiles?.filter((deletedFile) => !deletedFile.rejected && !deletedFile.changeApplied) ?? []
+        await this.applyDeleteFiles(newDeletedFiles)
 
         await this.insertCodeReferenceLogs(this.state.references ?? [])
 
         if (this._codeResultMessageId) {
             await this.updateFilesPaths({
                 tabID: this.state.tabID,
-                filePaths: this.state.filePaths ?? [],
-                deletedFiles: this.state.deletedFiles ?? [],
+                filePaths: newFilePaths ?? [],
+                deletedFiles: newDeletedFiles ?? [],
                 messageId: this._codeResultMessageId,
             })
         }

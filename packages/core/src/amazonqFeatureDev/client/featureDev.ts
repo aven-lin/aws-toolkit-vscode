@@ -36,6 +36,7 @@ import {
 } from './featuredevproxyclient'
 import { ExportResultArchiveCommandInput } from '@amzn/codewhisperer-streaming'
 import { FeatureClient } from '../../amazonq/client/client'
+import { ListEventsResponse } from '../prototype/types'
 
 // Re-enable once BE is able to handle retries.
 const writeAPIRetryOptions = {
@@ -67,6 +68,8 @@ export async function createFeatureDevProxyClient(options?: Partial<ServiceOptio
 }
 
 export class FeatureDevClient implements FeatureClient {
+    protected mockCallCount?: number = 0
+
     public async getClient(options?: Partial<ServiceOptions>) {
         // Should not be stored for the whole session.
         // Client has to be reinitialized for each request so we always have a fresh bearerToken
@@ -358,6 +361,186 @@ export class FeatureDevClient implements FeatureClient {
                     (e as Error).message
                 } RequestId: ${(e as any).requestId}`
             )
+        }
+    }
+
+    public async listEvents(
+        conversationId: string,
+        request: {
+            nextToken?: string
+            waitTimeSeconds?: number
+        }
+    ): Promise<ListEventsResponse> {
+        try {
+            // Simulate network delay
+            await new Promise((resolve) => setTimeout(resolve, 1000))
+
+            this.mockCallCount = (this.mockCallCount || 0) + 1
+            let response: ListEventsResponse
+
+            switch (this.mockCallCount) {
+                case 1:
+                    response = {
+                        items: [
+                            {
+                                eventType: 'agent.status',
+                                eventData: Buffer.from(
+                                    JSON.stringify({
+                                        generationId: '123e4567-e89b-12d3-a456-426614174000',
+                                        label: 'processing',
+                                        message: {
+                                            contentType: 'text',
+                                            value: 'Starting code generation for basic math functions...',
+                                        },
+                                        messageId: 'msg-001',
+                                    })
+                                ).toString('base64'),
+                                timestamp: new Date().toISOString(),
+                                messageId: 'status1',
+                            },
+                            {
+                                eventType: 'workspace.update',
+                                eventData: Buffer.from(
+                                    JSON.stringify({
+                                        edit: {
+                                            changes: {
+                                                'src/file1.ts': [
+                                                    {
+                                                        newText:
+                                                            'export function add(a: number, b: number) {\n    return a + b;\n}',
+                                                    },
+                                                ],
+                                            },
+                                        },
+                                    })
+                                ).toString('base64'),
+                                timestamp: new Date().toISOString(),
+                                messageId: 'batch1',
+                            },
+                        ],
+                        nextToken: 'token1',
+                        $response: { requestId: 'mock-request-1' },
+                    }
+                    break
+
+                case 2:
+                    response = {
+                        items: [
+                            {
+                                eventType: 'agent.status',
+                                eventData: Buffer.from(
+                                    JSON.stringify({
+                                        generationId: '123e4567-e89b-12d3-a456-426614174000',
+                                        label: 'generating',
+                                        message: {
+                                            contentType: 'text',
+                                            value: 'Creating multiplication function implementation...',
+                                        },
+                                        messageId: 'msg-002',
+                                    })
+                                ).toString('base64'),
+                                timestamp: new Date().toISOString(),
+                                messageId: 'status2',
+                            },
+                            {
+                                eventType: 'workspace.update',
+                                eventData: Buffer.from(
+                                    JSON.stringify({
+                                        edit: {
+                                            changes: {
+                                                'src/file2.ts': [
+                                                    {
+                                                        newText:
+                                                            'export function multiply(a: number, b: number) {\n    return a * b;\n}',
+                                                    },
+                                                ],
+                                            },
+                                        },
+                                    })
+                                ).toString('base64'),
+                                timestamp: new Date().toISOString(),
+                                messageId: 'batch2',
+                            },
+                        ],
+                        nextToken: 'token2',
+                        $response: { requestId: 'mock-request-2' },
+                    }
+                    break
+
+                case 3:
+                    response = {
+                        items: [
+                            {
+                                eventType: 'agent.status',
+                                eventData: Buffer.from(
+                                    JSON.stringify({
+                                        generationId: '123e4567-e89b-12d3-a456-426614174000',
+                                        label: 'finalizing',
+                                        message: {
+                                            contentType: 'text',
+                                            value: 'Setting up module exports and finalizing implementation...',
+                                        },
+                                        messageId: 'msg-003',
+                                    })
+                                ).toString('base64'),
+                                timestamp: new Date().toISOString(),
+                                messageId: 'status3',
+                            },
+                            {
+                                eventType: 'workspace.update',
+                                eventData: Buffer.from(
+                                    JSON.stringify({
+                                        edit: {
+                                            changes: {
+                                                'src/index.ts': [
+                                                    {
+                                                        newText: `import { add } from './file1';\nimport { multiply } from './file2';\n\nexport { add, multiply };`,
+                                                    },
+                                                ],
+                                            },
+                                        },
+                                    })
+                                ).toString('base64'),
+                                timestamp: new Date().toISOString(),
+                                messageId: 'batch3',
+                            },
+                            // Add the request.complete event
+                            {
+                                eventType: 'request.complete',
+                                eventData: Buffer.from(
+                                    JSON.stringify({
+                                        message: 'Code generation completed successfully',
+                                    })
+                                ).toString('base64'),
+                                timestamp: new Date().toISOString(),
+                                messageId: 'completion',
+                            },
+                        ],
+                        nextToken: undefined,
+                        $response: { requestId: 'mock-request-3' },
+                    }
+                    this.mockCallCount = 0
+                    break
+
+                default:
+                    response = {
+                        items: [],
+                        $response: { requestId: 'mock-request-empty' },
+                    }
+            }
+
+            getLogger().debug(
+                `${featureName}: successfully received events for conversation ${conversationId}. RequestId: ${response.$response?.requestId ?? 'unknown'}`
+            )
+
+            return response
+        } catch (e) {
+            getLogger().error(
+                `${featureName}: failed to list events: ${(e as Error).name}: ${
+                    (e as Error).message
+                } RequestId: ${(e as any).requestId}`
+            )
+            throw e
         }
     }
 }

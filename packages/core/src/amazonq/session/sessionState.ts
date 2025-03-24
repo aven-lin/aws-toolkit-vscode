@@ -347,31 +347,38 @@ export abstract class BaseCodeGenState extends CodeGenBase implements SessionSta
                     credentialStartUrl: AuthUtil.instance.startUrl,
                 })
 
-                action.telemetry.setGenerateCodeIteration(this.currentIteration)
-                action.telemetry.setGenerateCodeLastInvocationTime()
+                // action.telemetry.setGenerateCodeIteration(this.currentIteration)
+                // action.telemetry.setGenerateCodeLastInvocationTime()
 
                 const codeGenerationId = randomUUID()
                 await this.startCodeGeneration(action, codeGenerationId)
 
-                const codeGeneration = await this.generateCode({
-                    messenger: action.messenger,
-                    fs: action.fs,
-                    codeGenerationId,
-                    telemetry: action.telemetry,
-                    workspaceFolders: this.config.workspaceFolders,
-                    action,
-                })
+                // const codeGeneration = await this.generateCode({
+                //     messenger: action.messenger,
+                //     fs: action.fs,
+                //     codeGenerationId,
+                //     telemetry: action.telemetry,
+                //     workspaceFolders: this.config.workspaceFolders,
+                //     action,
+                // })
 
-                if (codeGeneration && !action.tokenSource?.token.isCancellationRequested) {
+                // Add null check for eventHandlers
+                if (!action.eventHandlers) {
+                    throw new Error('Event handlers are not defined')
+                }
+
+                const { newFiles, deletedFiles } = await action.eventHandlers()
+                getLogger().debug(`Afer eventHandlers newFiles: ${newFiles}`)
+                getLogger().debug(`Afetr eventHandlers deletedFiles: ${deletedFiles}`)
+
+                if (newFiles && deletedFiles && !action.tokenSource?.token.isCancellationRequested) {
                     this.config.currentCodeGenerationId = codeGenerationId
                     this.currentCodeGenerationId = codeGenerationId
                 }
 
-                this.filePaths = codeGeneration.newFiles
-                this.deletedFiles = codeGeneration.deletedFiles
-                this.references = codeGeneration.references
-                this.codeGenerationRemainingIterationCount = codeGeneration.codeGenerationRemainingIterationCount
-                this.codeGenerationTotalIterationCount = codeGeneration.codeGenerationTotalIterationCount
+                this.filePaths = newFiles
+                this.deletedFiles = deletedFiles
+
                 this.currentIteration =
                     this.codeGenerationRemainingIterationCount && this.codeGenerationTotalIterationCount
                         ? this.codeGenerationTotalIterationCount - this.codeGenerationRemainingIterationCount
@@ -381,8 +388,8 @@ export abstract class BaseCodeGenState extends CodeGenBase implements SessionSta
                     action.uploadHistory[codeGenerationId] = {
                         timestamp: Date.now(),
                         uploadId: this.config.uploadId,
-                        filePaths: codeGeneration.newFiles,
-                        deletedFiles: codeGeneration.deletedFiles,
+                        filePaths: newFiles,
+                        deletedFiles: deletedFiles,
                         tabId: this.tabID,
                     }
                 }

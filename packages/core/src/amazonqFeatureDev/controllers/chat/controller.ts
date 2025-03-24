@@ -52,7 +52,7 @@ import { openDeletedDiff, openDiff } from '../../../amazonq/commons/diff'
 import { i18n } from '../../../shared/i18n-helper'
 import globals from '../../../shared/extensionGlobals'
 import { CodeWhispererSettings } from '../../../codewhisperer/util/codewhispererSettings'
-import { randomUUID } from '../../../shared/crypto'
+// import { randomUUID } from '../../../shared/crypto'
 import { FollowUpTypes } from '../../../amazonq/commons/types'
 import { Messenger } from '../../../amazonq/commons/connector/baseMessenger'
 import { BaseChatSessionStorage } from '../../../amazonq/commons/baseChatStorage'
@@ -71,6 +71,7 @@ export interface ChatControllerEventEmitters {
     readonly insertCodeAtPositionClicked: EventEmitter<any>
     readonly fileClicked: EventEmitter<any>
     readonly storeCodeResultMessageId: EventEmitter<any>
+    readonly formActionClicked: EventEmitter<any>
 }
 
 type OpenDiffMessage = {
@@ -202,6 +203,9 @@ export class FeatureDevController {
         })
         this.chatControllerMessageListeners.storeCodeResultMessageId.event(async (data) => {
             return await this.storeCodeResultMessageId(data)
+        })
+        this.chatControllerMessageListeners.formActionClicked.event((data) => {
+            return this.formActionClicked(data)
         })
     }
 
@@ -412,7 +416,7 @@ export class FeatureDevController {
             await session.preloader()
 
             if (session.state.phase === DevPhase.CODEGEN) {
-                await this.onCodeGeneration(session, message.message, message.tabID)
+                await this.onCodeGenerationV2(session, message.message, message.tabID, message.messageId)
             }
         } catch (err: any) {
             this.disposeToken(session)
@@ -448,10 +452,7 @@ export class FeatureDevController {
         })
     }
 
-    /**
-     * Handle a regular incoming message when a user is in the code generation phase
-     */
-    private async onCodeGeneration(session: Session, message: string, tabID: string) {
+    private async onCodeGenerationV2(session: Session, message: string, tabID: string, messageId: string) {
         // lock the UI/show loading bubbles
         this.messenger.sendAsyncEventProgress(
             tabID,
@@ -468,9 +469,12 @@ export class FeatureDevController {
                 tabID,
                 canBeVoted: true,
             })
+
             this.messenger.sendUpdatePlaceholder(tabID, i18n('AWS.amazonq.featureDev.pillText.generatingCode'))
+
             await session.sendMetricDataTelemetry(MetricDataOperationName.StartCodeGeneration, MetricDataResult.Success)
             await session.send(message)
+
             const filePaths = session.state.filePaths ?? []
             const deletedFiles = session.state.deletedFiles ?? []
             // Only add the follow up accept/deny buttons when the tab hasn't been closed/request hasn't been cancelled
@@ -513,48 +517,16 @@ export class FeatureDevController {
                 session.state.codeGenerationId ?? ''
             )
 
-            const remainingIterations = session.state.codeGenerationRemainingIterationCount
-            const totalIterations = session.state.codeGenerationTotalIterationCount
+            // const messageId = randomUUID()
+            // await session.updateAcceptCodeMessageId(messageId)
+            // session.updateChatAnswer(tabID, i18n('AWS.amazonq.featureDev.pillText.acceptAllChanges'))
 
-            if (remainingIterations !== undefined && totalIterations !== undefined) {
-                this.messenger.sendAnswer({
-                    type: 'answer' as const,
-                    tabID: tabID,
-                    message: (() => {
-                        if (remainingIterations > 2) {
-                            return 'Would you like me to add this code to your project, or provide feedback for new code?'
-                        } else if (remainingIterations > 0) {
-                            return `Would you like me to add this code to your project, or provide feedback for new code? You have ${remainingIterations} out of ${totalIterations} code generations left.`
-                        } else {
-                            return 'Would you like me to add this code to your project?'
-                        }
-                    })(),
-                })
-            }
-
-            if (session?.state.phase === DevPhase.CODEGEN) {
-                const messageId = randomUUID()
-                session.updateAcceptCodeMessageId(messageId)
-                session.updateAcceptCodeTelemetrySent(false)
-                // need to add the followUps with an extra update here, or it will double-render them
-                this.messenger.sendAnswer({
-                    message: undefined,
-                    type: 'system-prompt',
-                    followUps: [],
-                    tabID: tabID,
-                    messageId,
-                })
-                await session.updateChatAnswer(tabID, i18n('AWS.amazonq.featureDev.pillText.acceptAllChanges'))
-                await session.sendLinesOfCodeGeneratedTelemetry()
-            }
-            this.messenger.sendUpdatePlaceholder(tabID, i18n('AWS.amazonq.featureDev.pillText.selectOption'))
+            // this.messenger.sendUpdatePlaceholder(tabID, i18n('AWS.amazonq.featureDev.pillText.selectOption'))
         } catch (err: any) {
             getLogger().error(`${featureName}: Error during code generation: ${err}`)
             await session.sendMetricDataTelemetry(MetricDataOperationName.EndCodeGeneration, getMetricResult(err))
             throw err
         } finally {
-            // Finish processing the event
-
             if (session?.state?.tokenSource?.token.isCancellationRequested) {
                 await this.workOnNewTask(
                     session.tabID,
@@ -565,9 +537,8 @@ export class FeatureDevController {
                 this.disposeToken(session)
             } else {
                 this.messenger.sendAsyncEventProgress(tabID, false, undefined)
-
                 // Lock the chat input until they explicitly click one of the follow ups
-                this.messenger.sendChatInputEnabled(tabID, false)
+                this.messenger.sendChatInputEnabled(tabID, true)
 
                 if (!this.isAmazonQVisible) {
                     const open = 'Open chat'
@@ -658,6 +629,7 @@ export class FeatureDevController {
         }
 
         // Ensure that chat input is enabled so that they can provide additional iterations if they choose
+        this.messenger.sendAsyncEventProgress(tabID, false, undefined)
         this.messenger.sendChatInputEnabled(tabID, true)
         this.messenger.sendUpdatePlaceholder(tabID, i18n('AWS.amazonq.featureDev.placeholder.additionalImprovements'))
     }
@@ -687,7 +659,7 @@ export class FeatureDevController {
 
             this.sendAcceptCodeTelemetry(session, filesAccepted)
 
-            await session.insertChanges()
+            await session.insertChanges(session.state.filePaths ?? [], session.state.deletedFiles ?? [])
 
             if (session.acceptCodeMessageId) {
                 this.sendUpdateCodeMessage(message.tabID)
@@ -944,11 +916,13 @@ export class FeatureDevController {
 
     private async stopResponse(message: any) {
         telemetry.ui_click.emit({ elementId: 'amazonq_stopCodeGeneration' })
+
         this.messenger.sendAnswer({
             message: i18n('AWS.amazonq.featureDev.pillText.stoppingCodeGeneration'),
             type: 'answer-part',
             tabID: message.tabID,
         })
+
         this.messenger.sendUpdatePlaceholder(
             message.tabID,
             i18n('AWS.amazonq.featureDev.pillText.stoppingCodeGeneration')
@@ -1083,4 +1057,178 @@ export class FeatureDevController {
             })
         }
     }
+
+    private async formActionClicked(message: any) {
+        getLogger().debug(`formActionClicked: ${message.action}`)
+        switch (message.action) {
+            case 'cancel-code-generation':
+                // eslint-disable-next-line unicorn/no-null
+                await this.stopResponse(message)
+                break
+        }
+    }
+
+    /**
+     * Handle a regular incoming message when a user is in the code generation phase
+     */
+    // private async onCodeGeneration(session: Session, message: string, tabID: string) {
+    //     // lock the UI/show loading bubbles
+    //     this.messenger.sendAsyncEventProgress(
+    //         tabID,
+    //         true,
+    //         session.retries === codeGenRetryLimit
+    //             ? i18n('AWS.amazonq.featureDev.pillText.awaitMessage')
+    //             : i18n('AWS.amazonq.featureDev.pillText.awaitMessageRetry')
+    //     )
+
+    //     try {
+    //         this.messenger.sendAnswer({
+    //             message: i18n('AWS.amazonq.featureDev.pillText.requestingChanges'),
+    //             type: 'answer-stream',
+    //             tabID,
+    //             canBeVoted: true,
+    //         })
+    //         this.messenger.sendUpdatePlaceholder(tabID, i18n('AWS.amazonq.featureDev.pillText.generatingCode'))
+    //         await session.sendMetricDataTelemetry(MetricDataOperationName.StartCodeGeneration, MetricDataResult.Success)
+    //         await session.send(message)
+    //         const filePaths = session.state.filePaths ?? []
+    //         const deletedFiles = session.state.deletedFiles ?? []
+    //         // Only add the follow up accept/deny buttons when the tab hasn't been closed/request hasn't been cancelled
+    //         if (session?.state?.tokenSource?.token.isCancellationRequested) {
+    //             return
+    //         }
+
+    //         if (filePaths.length === 0 && deletedFiles.length === 0) {
+    //             this.messenger.sendAnswer({
+    //                 message: i18n('AWS.amazonq.featureDev.pillText.unableGenerateChanges'),
+    //                 type: 'answer',
+    //                 tabID: tabID,
+    //                 canBeVoted: true,
+    //             })
+    //             this.messenger.sendAnswer({
+    //                 type: 'system-prompt',
+    //                 tabID: tabID,
+    //                 followUps:
+    //                     this.retriesRemaining(session) > 0
+    //                         ? [
+    //                               {
+    //                                   pillText: i18n('AWS.amazonq.featureDev.pillText.retry'),
+    //                                   type: FollowUpTypes.Retry,
+    //                                   status: 'warning',
+    //                               },
+    //                           ]
+    //                         : [],
+    //             })
+    //             // Lock the chat input until they explicitly click retry
+    //             this.messenger.sendChatInputEnabled(tabID, false)
+    //             return
+    //         }
+
+    //         this.messenger.sendCodeResult(
+    //             filePaths,
+    //             deletedFiles,
+    //             session.state.references ?? [],
+    //             tabID,
+    //             session.uploadId,
+    //             session.state.codeGenerationId ?? ''
+    //         )
+
+    //         const remainingIterations = session.state.codeGenerationRemainingIterationCount
+    //         const totalIterations = session.state.codeGenerationTotalIterationCount
+
+    //         if (remainingIterations !== undefined && totalIterations !== undefined) {
+    //             this.messenger.sendAnswer({
+    //                 type: 'answer' as const,
+    //                 tabID: tabID,
+    //                 message: (() => {
+    //                     if (remainingIterations > 2) {
+    //                         return 'Would you like me to add this code to your project, or provide feedback for new code?'
+    //                     } else if (remainingIterations > 0) {
+    //                         return `Would you like me to add this code to your project, or provide feedback for new code? You have ${remainingIterations} out of ${totalIterations} code generations left.`
+    //                     } else {
+    //                         return 'Would you like me to add this code to your project?'
+    //                     }
+    //                 })(),
+    //             })
+    //         }
+
+    //         if (session?.state.phase === DevPhase.CODEGEN) {
+    //             const messageId = randomUUID()
+    //             session.updateAcceptCodeMessageId(messageId)
+    //             session.updateAcceptCodeTelemetrySent(false)
+    //             // need to add the followUps with an extra update here, or it will double-render them
+    //             this.messenger.sendAnswer({
+    //                 message: undefined,
+    //                 type: 'system-prompt',
+    //                 followUps: [],
+    //                 tabID: tabID,
+    //                 messageId,
+    //             })
+    //             await session.updateChatAnswer(tabID, i18n('AWS.amazonq.featureDev.pillText.acceptAllChanges'))
+    //             await session.sendLinesOfCodeGeneratedTelemetry()
+    //         }
+    //         this.messenger.sendUpdatePlaceholder(tabID, i18n('AWS.amazonq.featureDev.pillText.selectOption'))
+    //     } catch (err: any) {
+    //         getLogger().error(`${featureName}: Error during code generation: ${err}`)
+
+    //         let result: string
+    //         switch (err.constructor.name) {
+    //             case FeatureDevServiceError.name:
+    //                 if (err.code === 'EmptyPatchException') {
+    //                     result = MetricDataResult.LlmFailure
+    //                 } else if (err.code === 'GuardrailsException' || err.code === 'ThrottlingException') {
+    //                     result = MetricDataResult.Error
+    //                 } else {
+    //                     result = MetricDataResult.Fault
+    //                 }
+    //                 break
+    //             case MonthlyConversationLimitError.name:
+    //             case CodeIterationLimitError.name:
+    //             case PromptRefusalException.name:
+    //             case NoChangeRequiredException.name:
+    //                 result = MetricDataResult.Error
+    //                 break
+    //             default:
+    //                 if (isAPIClientError(err)) {
+    //                     result = MetricDataResult.Error
+    //                 } else {
+    //                     result = MetricDataResult.Fault
+    //                 }
+    //                 break
+    //         }
+
+    //         await session.sendMetricDataTelemetry(MetricDataOperationName.EndCodeGeneration, result)
+    //         throw err
+    //     } finally {
+    //         // Finish processing the event
+
+    //         if (session?.state?.tokenSource?.token.isCancellationRequested) {
+    //             await this.workOnNewTask(
+    //                 session.tabID,
+    //                 session.state.codeGenerationRemainingIterationCount,
+    //                 session.state.codeGenerationTotalIterationCount,
+    //                 session?.state?.tokenSource?.token.isCancellationRequested
+    //             )
+    //             this.disposeToken(session)
+    //         } else {
+    //             this.messenger.sendAsyncEventProgress(tabID, false, undefined)
+
+    //             // Lock the chat input until they explicitly click one of the follow ups
+    //             this.messenger.sendChatInputEnabled(tabID, false)
+
+    //             if (!this.isAmazonQVisible) {
+    //                 const open = 'Open chat'
+    //                 const resp = await vscode.window.showInformationMessage(
+    //                     i18n('AWS.amazonq.featureDev.answer.qGeneratedCode'),
+    //                     open
+    //                 )
+    //                 if (resp === open) {
+    //                     await vscode.commands.executeCommand('aws.AmazonQChatView.focus')
+    //                     // TODO add focusing on the specific tab once that's implemented
+    //                 }
+    //             }
+    //         }
+    //     }
+    //     await session.sendMetricDataTelemetry(MetricDataOperationName.EndCodeGeneration, MetricDataResult.Success)
+    // }
 }
